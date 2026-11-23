@@ -1,11 +1,13 @@
 # /// script
 # requires-python = ">=3.12"
-# dependencies = ["probeinterface"]
+# dependencies = ["probeinterface", "matplotlib"]
 # ///
 """Generator for the Corticale SiNAPS probe library.
 
-Builds one probeinterface JSON per probe model and writes it to
-corticale/<model>/<model>.json. Every dimension comes from the Corticale
+Builds one probeinterface JSON per probe model, plus a preview PNG with the
+Corticale logo, and writes them to corticale/<model>/. The PNG follows
+generate_image.py, with a tip zoom on single-shank probes. Every dimension
+comes from the Corticale
 technical datasheet and is stored below in two levels:
 
 - ``Arrangement`` describes a single shank. There is one for each electrode
@@ -38,8 +40,15 @@ import math
 from dataclasses import dataclass
 from pathlib import Path
 
-from probeinterface import Probe, ProbeGroup, write_probeinterface
+import matplotlib
 
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+from probeinterface import Probe, ProbeGroup, write_probeinterface
+from probeinterface.plotting import plot_probe
+
+ROOT = Path(__file__).resolve().parent.parent
+LOGO = ROOT / "apps" / "probe-viewer" / "public" / "logos" / "corticale.png"
 MANUFACTURER = "corticale"
 SHANK_THICKNESS_UM = 50.0  # shank (and base) thickness, all models
 BASE_BAND_UM = 50.0  # height of the band joining the shanks at the top (multi-shank, drawing only)
@@ -228,18 +237,59 @@ def build_probe(model: Model) -> Probe:
     return probe
 
 
+def save_preview(probe: Probe, model: Model, out_file: Path) -> None:
+    """Preview PNG, laid out as generate_image.py (-ids, plus -z on
+    single-shank probes), with the Corticale logo in the top-right corner."""
+    zoom = model.shanks == 1
+    fig, axs = plt.subplots(figsize=(15, 15), ncols=2 if zoom else 1)
+    ax_full, ax_tip = axs if zoom else (axs, None)
+    title = (
+        f"{MANUFACTURER} - {model.code}\n{probe.description}\n"
+        f"{probe.get_contact_count()}ch {probe.get_shank_count()}shank(s)"
+    )
+    for ax in (ax_full, ax_tip):
+        if ax is None:
+            continue
+        plot_probe(probe, with_contact_id=True, ax=ax)
+        for txt in ax.texts:
+            txt.set_fontsize(2)
+        ax.set_title("")
+        ax.tick_params(axis="both", which="major", labelsize=10)
+    ax_full.set_ylabel("Y (µm)", fontsize=10)
+    if zoom:
+        contour = probe.probe_planar_contour
+        left, right = contour[:, 0].min(), contour[:, 0].max()
+        width = right - left
+        ax_tip.set_xlim(left - 0.5 * width, right + 0.5 * width)
+        ax_tip.set_ylim(contour[:, 1].min() - 20, 200)
+        for ax in (ax_full, ax_tip):
+            ax.spines[["top", "right"]].set_visible(False)
+        ax_full.set_xlabel("")
+        fig.suptitle(title, fontsize=15)
+    else:
+        ax_full.set_title(title, fontsize=15)
+        ax_full.set_xlabel("X (µm)", fontsize=10)
+
+    logo_ax = fig.add_axes([0.78, 0.88, 0.17, 0.06])  # top-right corner
+    logo_ax.imshow(plt.imread(LOGO))
+    logo_ax.axis("off")
+
+    fig.savefig(out_file, dpi=600)
+    plt.close(fig)
+
+
 def main() -> None:
-    root = Path(__file__).resolve().parent.parent
     for model in MODELS:
         probe = build_probe(model)
         group = ProbeGroup()
         group.add_probe(probe)
 
-        out_dir = root / MANUFACTURER / model.code
+        out_dir = ROOT / MANUFACTURER / model.code
         out_dir.mkdir(parents=True, exist_ok=True)
         out_file = out_dir / f"{model.code}.json"
         write_probeinterface(out_file, group)
-        print(f"wrote {out_file}  ({description(model)})")
+        save_preview(probe, model, out_file.with_suffix(".png"))
+        print(f"wrote {out_file} and .png  ({description(model)})")
 
 
 if __name__ == "__main__":
